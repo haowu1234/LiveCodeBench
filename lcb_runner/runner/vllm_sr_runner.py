@@ -11,12 +11,15 @@ Environment variables:
     VLLM_SR_BASE_URL: Base URL for vLLM-SR (default: http://localhost:8899)
     VLLM_SR_API_KEY: API key for vLLM-SR (default: empty, not required)
     VLLM_SR_DEBUG: Set to "1" to enable debug logging
+    VLLM_SR_CONCURRENCY: Number of concurrent requests (default: 8)
 """
 
 import os
 import traceback
 from time import sleep
 from typing import Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from tqdm import tqdm
 
 try:
     import openai
@@ -34,6 +37,7 @@ class VLLMSRRunner(BaseRunner):
     
     Uses OpenAI-compatible API to call vLLM-SR endpoints.
     Supports both "MoM" (automatic routing) and direct model specification.
+    Supports concurrent batch processing for faster evaluation.
     """
     
     def __init__(self, args, model):
@@ -43,9 +47,11 @@ class VLLMSRRunner(BaseRunner):
         self.base_url = os.getenv("VLLM_SR_BASE_URL", "http://localhost:8899")
         api_key = os.getenv("VLLM_SR_API_KEY", "not-needed")
         self.debug = os.getenv("VLLM_SR_DEBUG", "0") == "1"
+        self.concurrency = int(os.getenv("VLLM_SR_CONCURRENCY", "8"))
         
         # Store expected_n from args
         self.expected_n = args.n
+        self.args = args
         
         # Extract model name from the full model identifier
         # Format: "vllm-sr-{model_name}" where model_name can be "MoM" or a specific model
@@ -75,74 +81,112 @@ class VLLMSRRunner(BaseRunner):
         print(f"  - model: {self.model_name}")
         print(f"  - expected_n: {self.expected_n}")
         print(f"  - timeout: {args.openai_timeout}s")
+        print(f"  - concurrency: {self.concurrency}")
         print(f"  - debug: {self.debug}")
 
-    def _run_single(self, prompt: list[dict[str, str]], retry_count: int = 10) -> list[str]:
-        """Run a single prompt through vLLM-SR."""
+    def run_batch(self, prompts: list) -> list[list[str]]:
+        """
+        Override run_batch to use concurrent processing.
+        Process prompts in parallel using ThreadPoolExecutor.
+        """
+        print(f"\n[vLLM-SR] Processing {len(prompts)} prompts with concurrency={self.concurrency}")
         
-        # Debug: Log input
-        if self.debug:
-            print(f"\n[vLLM-SR DEBUG] _run_single called:")
-            print(f"  - prompt type: {type(prompt)}")
-            print(f"  - prompt length: {len(prompt) if isinstance(prompt, list) else 'N/A'}")
-            print(f"  - retry_count: {retry_count}")
-            print(f"  - expected_n: {self.expected_n}")
-            if isinstance(prompt, list) and len(prompt) > 0:
-                print(f"  - first message role: {prompt[0].get('role', 'N/A')}")
-                print(f"  - first message content[:100]: {str(prompt[0].get('content', ''))[:100]}")
+        outputs = [None] * len(prompts)
+        
+        def process_single(idx_prompt):
+            idx, prompt = idx_prompt
+            try:
+                result = self._run_single(prompt)
+                return idx, result
+            except Exception as e:
+                print(f"[vLLM-SR] Error processing prompt {idx}: {repr(e)}")
+                traceback.print_exc()
+                return idx, [""] * self.expected_n
+        
+        # Use ThreadPoolExecutor for concurrent requests
+        with ThreadPoolExecutor(max_workers=self.concurrency) as executor:
+            # Submit all tasks
+            futures = {
+                executor.submit(process_single, (idx, prompt)): idx 
+                for idx, prompt in enumerate(prompts)
+            }
+            
+            # Collect results with progress bar
+            with tqdm(total=len(prompts), desc="[vLLM-SR Concurrent]") as pbar:
+                for future in as_completed(futures):
+                    try:
+                        idx, result = future.result()
+                        outputs[idx] = result
+                        pbar.update(1)
+                    except Exception as e:
+                        idx = futures[future]
+                        print(f"[vLLM-SR] Future error for prompt {idx}: {repr(e)}")
+                        outputs[idx] = [""] * self.expected_n
+                        pbar.update(1)
+        
+        # Fill any None results with empty strings
+        for i, output in enumerate(outputs):
+            if output is None:
+                outputs[i] = [""] * self.expected_n
+        
+        return outputs
+
+    def _run_single(self, prompt: list[dict[str, str]], retry_count: int = 10) -> list[str]:
+        """
+        Run a single prompt through vLLM-SR.
+        
+        Since vLLM-SR doesn't support n > 1, we loop and call it n times
+        to generate multiple samples for Pass@k evaluation.
+        """
         
         # Validate input
         if not isinstance(prompt, list):
-            print(f"[vLLM-SR ERROR] Invalid prompt type: {type(prompt)}, expected list")
-            print(f"[vLLM-SR ERROR] Prompt value: {str(prompt)[:200]}")
+            if self.debug:
+                print(f"[vLLM-SR ERROR] Invalid prompt type: {type(prompt)}, expected list")
             return [""] * self.expected_n
         
         if len(prompt) == 0:
-            print(f"[vLLM-SR ERROR] Empty prompt list")
+            if self.debug:
+                print(f"[vLLM-SR ERROR] Empty prompt list")
             return [""] * self.expected_n
 
+        # Loop to generate n samples (since vLLM-SR doesn't support n > 1)
+        results = []
+        for sample_idx in range(self.expected_n):
+            result = self._call_api_once(prompt, sample_idx, retry_count)
+            results.append(result)
+            
+        return results
+    
+    def _call_api_once(self, prompt: list[dict[str, str]], sample_idx: int, retry_count: int = 10) -> str:
+        """Call vLLM-SR API once and return a single result."""
+        
         if retry_count == 0:
-            print("[vLLM-SR] Max retries reached. Returning empty responses.")
-            return [""] * self.expected_n
+            print(f"[vLLM-SR] Max retries reached for sample {sample_idx}. Returning empty.")
+            return ""
 
         try:
-            if self.debug:
-                print(f"[vLLM-SR DEBUG] Sending request to {self.base_url}/v1/chat/completions")
-                print(f"[vLLM-SR DEBUG] client_kwargs: {self.client_kwargs}")
+            # Build kwargs with n=1 (since SR doesn't support n > 1)
+            call_kwargs = {
+                "model": self.model_name,
+                "temperature": self.client_kwargs["temperature"],
+                "max_tokens": self.client_kwargs["max_tokens"],
+                "top_p": self.client_kwargs["top_p"],
+                "n": 1,  # Force n=1 for each call
+                "timeout": self.client_kwargs["timeout"],
+            }
             
             response = self.client.chat.completions.create(
                 messages=prompt,
-                **self.client_kwargs,
+                **call_kwargs,
             )
             
-            if self.debug:
-                print(f"[vLLM-SR DEBUG] Response received:")
-                print(f"  - response type: {type(response)}")
-                print(f"  - choices count: {len(response.choices) if response.choices else 0}")
-            
-            # Extract results from response
-            results = []
-            if response.choices:
-                for i, c in enumerate(response.choices):
-                    content = c.message.content if c.message and c.message.content else ""
-                    results.append(content)
-                    if self.debug:
-                        print(f"  - choice[{i}] content[:100]: {content[:100] if content else 'EMPTY'}")
+            # Extract result
+            if response.choices and len(response.choices) > 0:
+                content = response.choices[0].message.content if response.choices[0].message else ""
+                return content or ""
             else:
-                print(f"[vLLM-SR WARNING] No choices in response!")
-            
-            # Ensure we return exactly the expected number of results
-            if len(results) < self.expected_n:
-                print(f"[vLLM-SR] Warning: Got {len(results)} results, expected {self.expected_n}. Padding with empty strings.")
-                results.extend([""] * (self.expected_n - len(results)))
-            elif len(results) > self.expected_n:
-                print(f"[vLLM-SR] Warning: Got {len(results)} results, expected {self.expected_n}. Truncating.")
-                results = results[:self.expected_n]
-            
-            if self.debug:
-                print(f"[vLLM-SR DEBUG] Returning {len(results)} results")
-            
-            return results
+                return ""
             
         except (
             openai.APIError,
@@ -153,18 +197,9 @@ class VLLMSRRunner(BaseRunner):
             openai.APITimeoutError,
             openai.APIConnectionError,
         ) as e:
-            print(f"[vLLM-SR] OpenAI Exception: {repr(e)}")
-            print(f"[vLLM-SR] Exception type: {type(e).__name__}")
-            if self.debug:
-                traceback.print_exc()
-            print(f"[vLLM-SR] Sleeping for 10 seconds... (retries left: {retry_count - 1})")
-            sleep(10)
-            return self._run_single(prompt, retry_count=retry_count - 1)
+            print(f"[vLLM-SR] OpenAI Exception for sample {sample_idx}: {repr(e)}")
+            sleep(5)  # Shorter sleep for concurrent mode
+            return self._call_api_once(prompt, sample_idx, retry_count=retry_count - 1)
         except Exception as e:
-            print(f"[vLLM-SR] Unexpected Exception: {repr(e)}")
-            print(f"[vLLM-SR] Exception type: {type(e).__name__}")
-            print(f"[vLLM-SR] Prompt (first 200 chars): {str(prompt)[:200]}")
-            traceback.print_exc()
-            # Return empty results instead of raising to allow batch to continue
-            print(f"[vLLM-SR] Returning {self.expected_n} empty results to continue batch.")
-            return [""] * self.expected_n
+            print(f"[vLLM-SR] Unexpected Exception for sample {sample_idx}: {repr(e)}")
+            return ""
