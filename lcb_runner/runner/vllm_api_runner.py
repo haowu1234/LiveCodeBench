@@ -7,12 +7,16 @@ to an existing vLLM server.
 
 Usage:
     python -m lcb_runner.runner.main --model vllm-api-DeepSeek-V3.2 --scenario codegeneration --evaluate
+    
+    # With high reasoning enabled:
+    python -m lcb_runner.runner.main --model vllm-api-DeepSeek-V3.2 --high_reasoning --scenario codegeneration --evaluate
 
 Environment variables:
     VLLM_API_BASE_URL: Base URL for vLLM server (default: http://localhost:8002)
     VLLM_API_KEY: API key (default: "EMPTY")
     VLLM_API_DEBUG: Set to "1" to enable debug logging
     VLLM_API_CONCURRENCY: Number of concurrent requests (default: 8)
+    VLLM_API_REASONING_EFFORT: Reasoning effort level (low/medium/high, default: None)
 """
 
 import os
@@ -36,6 +40,9 @@ class VLLMAPIRunner(BaseRunner):
     
     This is different from VLLMRunner which loads models locally.
     This runner connects to an existing vLLM server and supports n > 1.
+    
+    Supports high reasoning mode for models like DeepSeek-R1, Kimi-K2, etc.
+    Enable via --high_reasoning flag or VLLM_API_REASONING_EFFORT env var.
     """
     
     def __init__(self, args, model):
@@ -47,16 +54,35 @@ class VLLMAPIRunner(BaseRunner):
         self.debug = os.getenv("VLLM_API_DEBUG", "1") == "1"
         self.concurrency = int(os.getenv("VLLM_API_CONCURRENCY", "16"))
         
+        # High reasoning support
+        # Priority: args.high_reasoning > args.reasoning_effort > env var > None
+        self.reasoning_effort = None
+        if hasattr(args, 'high_reasoning') and args.high_reasoning:
+            self.reasoning_effort = "high"
+        elif hasattr(args, 'reasoning_effort') and args.reasoning_effort:
+            self.reasoning_effort = args.reasoning_effort
+        else:
+            env_reasoning = os.getenv("VLLM_API_REASONING_EFFORT", "").lower()
+            if env_reasoning in ("low", "medium", "high"):
+                self.reasoning_effort = env_reasoning
+        
         # Store expected_n from args
         self.expected_n = args.n
         self.args = args
         
         # Extract model name from the full model identifier
-        # Format: "vllm-api-{model_name}"
-        if model.model_name.startswith("vllm-api-"):
-            self.model_name = model.model_name[9:]  # Remove "vllm-api-" prefix
+        # Format: "vllm-api-{model_name}" or "vllm-api-{model_name}__high"
+        raw_model_name = model.model_name
+        if raw_model_name.startswith("vllm-api-"):
+            raw_model_name = raw_model_name[9:]  # Remove "vllm-api-" prefix
+        
+        # Check if model name contains reasoning effort suffix (e.g., "__high")
+        if "__" in raw_model_name:
+            self.model_name, suffix = raw_model_name.rsplit("__", 1)
+            if suffix in ("low", "medium", "high") and self.reasoning_effort is None:
+                self.reasoning_effort = suffix
         else:
-            self.model_name = model.model_name
+            self.model_name = raw_model_name
         
         # Create OpenAI client pointing to vLLM server
         self.client = OpenAI(
@@ -74,6 +100,7 @@ class VLLMAPIRunner(BaseRunner):
         print(f"  - timeout: {args.openai_timeout}s")
         print(f"  - concurrency: {self.concurrency}")
         print(f"  - supports_n: {self.supports_n}")
+        print(f"  - reasoning_effort: {self.reasoning_effort or 'disabled'}")
 
     def run_batch(self, prompts: list) -> list[list[str]]:
         """
@@ -125,6 +152,7 @@ class VLLMAPIRunner(BaseRunner):
         Run a single prompt through vLLM API.
         
         vLLM supports n > 1 natively, so we can get multiple samples in one call.
+        Supports reasoning_effort parameter for models like DeepSeek-R1, Kimi-K2.
         """
         
         if not isinstance(prompt, list) or len(prompt) == 0:
@@ -137,22 +165,44 @@ class VLLMAPIRunner(BaseRunner):
             return [""] * self.expected_n
 
         try:
-            response = self.client.chat.completions.create(
-                model=self.model_name,
-                messages=prompt,
-                temperature=self.args.temperature,
-                max_tokens=self.args.max_tokens,
-                top_p=self.args.top_p,
-                n=self.expected_n,  # vLLM supports n > 1
-                timeout=self.args.openai_timeout,
-            )
+            # Build request kwargs
+            request_kwargs = {
+                "model": self.model_name,
+                "messages": prompt,
+                "temperature": self.args.temperature,
+                "max_tokens": self.args.max_tokens,
+                "top_p": self.args.top_p,
+                "n": self.expected_n,  # vLLM supports n > 1
+                "timeout": self.args.openai_timeout,
+            }
+            
+            # Add reasoning_effort for high reasoning mode
+            # This is supported by DeepSeek-R1, Kimi-K2, and compatible APIs
+            if self.reasoning_effort:
+                request_kwargs["extra_body"] = {
+                    "reasoning_effort": self.reasoning_effort
+                }
+                # For models that support it via standard parameter
+                # (some vLLM deployments may support this directly)
+                # request_kwargs["reasoning_effort"] = self.reasoning_effort
+            
+            response = self.client.chat.completions.create(**request_kwargs)
             
             # Extract all n results
             results = []
             if response.choices:
                 for choice in response.choices:
-                    content = choice.message.content if choice.message else ""
-                    results.append(content or "")
+                    message = choice.message
+                    if message:
+                        content = message.content or ""
+                        # For reasoning models, optionally include reasoning_content
+                        # Some vLLM deployments return reasoning in message.reasoning or message.reasoning_content
+                        reasoning = getattr(message, 'reasoning_content', None) or getattr(message, 'reasoning', None)
+                        if reasoning and self.debug:
+                            print(f"[vLLM-API] Reasoning: {reasoning[:200]}...")
+                        results.append(content)
+                    else:
+                        results.append("")
             
             # Pad with empty strings if we got fewer results
             while len(results) < self.expected_n:

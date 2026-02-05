@@ -118,6 +118,19 @@ def get_args():
         help="Folder name to save the custom output results (output file folder modified if None)",
     )
     parser.add_argument("--dtype", type=str, default="bfloat16", help="Dtype for vllm")
+    # High reasoning / thinking mode support
+    parser.add_argument(
+        "--high_reasoning",
+        action="store_true",
+        help="Enable high reasoning mode (equivalent to --reasoning_effort high)",
+    )
+    parser.add_argument(
+        "--reasoning_effort",
+        type=str,
+        default=None,
+        choices=["low", "medium", "high"],
+        help="Reasoning effort level for models supporting deep thinking (DeepSeek-R1, Kimi-K2, etc.)",
+    )
     # Added to avoid running extra generations (it's slow for reasoning models)
     parser.add_argument(
         "--start_date",
