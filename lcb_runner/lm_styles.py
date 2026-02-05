@@ -36,6 +36,9 @@ class LMStyle(Enum):
 
     # vLLM Semantic Router
     VLLMSR = "VLLMSR"
+    
+    # vLLM API (remote vLLM server via OpenAI-compatible API)
+    VLLMAPI = "VLLMAPI"
 
 
 @dataclass
@@ -879,6 +882,43 @@ LanguageModelList: list[LanguageModel] = [
         LMStyle.VLLMSR,
         datetime(2025, 1, 1),
         link="https://github.com/vllm-project/semantic-router",
+    ),
+    ## vLLM API models (direct access to vLLM server, for baseline comparison)
+    # Use VLLM_API_BASE_URL env var to set server URL (default: http://localhost:8002)
+    LanguageModel(
+        "vllm-api-openai/gpt-oss-120b",
+        "vLLM-API-GPT-OSS-120B",
+        LMStyle.VLLMAPI,
+        datetime(2025, 1, 1),
+        link="Local vLLM server",
+    ),
+    LanguageModel(
+        "vllm-api-DeepSeek-V3.2",
+        "vLLM-API-DeepSeek-V3.2",
+        LMStyle.VLLMAPI,
+        datetime(2025, 1, 1),
+        link="Local vLLM server",
+    ),
+    LanguageModel(
+        "vllm-api-Qwen/Qwen3-235B",
+        "vLLM-API-Qwen3-235B",
+        LMStyle.VLLMAPI,
+        datetime(2025, 1, 1),
+        link="Local vLLM server",
+    ),
+    LanguageModel(
+        "vllm-api-GLM-4.7",
+        "vLLM-API-GLM-4.7",
+        LMStyle.VLLMAPI,
+        datetime(2025, 1, 1),
+        link="Local vLLM server",
+    ),
+    LanguageModel(
+        "vllm-api-Kimi-K2-Thinking",
+        "vLLM-API-Kimi-K2-Thinking",
+        LMStyle.VLLMAPI,
+        datetime(2025, 1, 1),
+        link="Local vLLM server",
     ),
 ]
 
