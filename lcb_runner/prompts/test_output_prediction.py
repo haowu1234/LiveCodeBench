@@ -160,7 +160,7 @@ def format_prompt_test_output(
     question: TestOutputPredictionProblem, LanguageModelStyle: LMStyle
 ) -> str:
     testcase_input = question.test[0].input
-    if LanguageModelStyle == LMStyle.OpenAIChat:
+    if LanguageModelStyle in [LMStyle.OpenAIChat, LMStyle.VLLMSR]:
         chat_messages = [
             {
                 "role": "system",

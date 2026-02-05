@@ -178,7 +178,7 @@ def format_prompt_self_repair(
     if result:
         # The code is accepted, no need to change anything.
         return ""
-    if LanguageModelStyle == LMStyle.OpenAIChat:
+    if LanguageModelStyle in [LMStyle.OpenAIChat, LMStyle.VLLMSR]:
         chat_messages = [
             {"role": "system", "content": PromptConstants.SYSTEM_MESSAGE_GENERIC},
         ]

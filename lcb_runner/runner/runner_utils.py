@@ -46,6 +46,10 @@ def build_runner(args, model: LanguageModel):
         from lcb_runner.runner.together_runner import TogetherAIRunner
 
         return TogetherAIRunner(args, model)
+    if model.model_style == LMStyle.VLLMSR:
+        from lcb_runner.runner.vllm_sr_runner import VLLMSRRunner
+
+        return VLLMSRRunner(args, model)
     if "/fireworks/" in model.model_name:
         from lcb_runner.runner.fireworks_runner import FireWorksRunner
 

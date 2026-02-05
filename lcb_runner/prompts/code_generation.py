@@ -214,6 +214,7 @@ def format_prompt_generation(
         LMStyle.DeepSeekAPI,
         LMStyle.TogetherAI,
         LMStyle.CohereCommand,
+        LMStyle.VLLMSR,  # vLLM-SR uses OpenAI-compatible chat format
     ]:
         chat_messages = [
             {

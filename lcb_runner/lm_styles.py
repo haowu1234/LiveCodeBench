@@ -34,6 +34,9 @@ class LMStyle(Enum):
 
     TogetherAI = "TogetherAI"
 
+    # vLLM Semantic Router
+    VLLMSR = "VLLMSR"
+
 
 @dataclass
 class LanguageModel:
@@ -860,6 +863,22 @@ LanguageModelList: list[LanguageModel] = [
         LMStyle.DeepSeekR1,
         datetime(2024, 4, 1),
         "https://huggingface.co/agentica-org/DeepCoder-14B-Preview",
+    ),
+    ## vLLM Semantic Router models
+    # Use "MoM" for automatic routing, or specify model like "openai/gpt-oss-120b"
+    LanguageModel(
+        "vllm-sr-MoM",
+        "vLLM-SR-MoM",
+        LMStyle.VLLMSR,
+        datetime(2025, 1, 1),
+        link="https://github.com/vllm-project/semantic-router",
+    ),
+    LanguageModel(
+        "vllm-sr-openai/gpt-oss-120b",
+        "vLLM-SR-GPT-OSS-120B",
+        LMStyle.VLLMSR,
+        datetime(2025, 1, 1),
+        link="https://github.com/vllm-project/semantic-router",
     ),
 ]
 

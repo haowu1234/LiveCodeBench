@@ -84,7 +84,7 @@ def format_prompt_execution_base(
     else:
         prompt = make_direct_output_prompt((code, input))
 
-    if LanguageModelStyle == LMStyle.OpenAIChat:
+    if LanguageModelStyle in [LMStyle.OpenAIChat, LMStyle.VLLMSR]:
         chat_messages = [
             {
                 "role": "system",
