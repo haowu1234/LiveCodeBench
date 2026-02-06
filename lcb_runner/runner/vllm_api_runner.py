@@ -176,15 +176,13 @@ class VLLMAPIRunner(BaseRunner):
                 "timeout": self.args.openai_timeout,
             }
             
-            # Add reasoning_effort for high reasoning mode
-            # This is supported by DeepSeek-R1, Kimi-K2, and compatible APIs
+            # Add reasoning_effort for high reasoning mode (gpt-oss-120b, etc.)
+            # OpenAI SDK natively supports reasoning_effort parameter
+            # Reference: https://platform.openai.com/docs/api-reference/chat/create
             if self.reasoning_effort:
-                request_kwargs["extra_body"] = {
-                    "reasoning_effort": self.reasoning_effort
-                }
-                # For models that support it via standard parameter
-                # (some vLLM deployments may support this directly)
-                # request_kwargs["reasoning_effort"] = self.reasoning_effort
+                request_kwargs["reasoning_effort"] = self.reasoning_effort
+                if self.debug:
+                    print(f"[vLLM-API] Using reasoning_effort={self.reasoning_effort}")
             
             response = self.client.chat.completions.create(**request_kwargs)
             
