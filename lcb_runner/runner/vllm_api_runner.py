@@ -149,10 +149,21 @@ class VLLMAPIRunner(BaseRunner):
 
     def _run_single(self, prompt: list[dict[str, str]], retry_count: int = 5) -> list[str]:
         """
-        Run a single prompt through vLLM API.
+        Run a single prompt through vLLM API using OpenAI SDK.
         
-        vLLM supports n > 1 natively, so we can get multiple samples in one call.
-        Supports reasoning_effort parameter for models like DeepSeek-R1, Kimi-K2.
+        Uses native SDK parameters following OpenAI API specification:
+        https://platform.openai.com/docs/api-reference/chat/create
+        
+        Key parameters used:
+        - messages: The conversation messages
+        - model: Model ID
+        - temperature: Sampling temperature (0-2)
+        - max_tokens: Maximum tokens to generate
+        - top_p: Nucleus sampling threshold
+        - n: Number of completions to generate
+        - reasoning_effort: Constrains reasoning effort (low/medium/high) for reasoning models
+        - stop: Stop sequences
+        - timeout: Request timeout
         """
         
         if not isinstance(prompt, list) or len(prompt) == 0:
@@ -165,26 +176,30 @@ class VLLMAPIRunner(BaseRunner):
             return [""] * self.expected_n
 
         try:
-            # Build request kwargs
-            request_kwargs = {
-                "model": self.model_name,
-                "messages": prompt,
-                "temperature": self.args.temperature,
-                "max_tokens": self.args.max_tokens,
-                "top_p": self.args.top_p,
-                "n": self.expected_n,  # vLLM supports n > 1
-                "timeout": self.args.openai_timeout,
-            }
-            
-            # Add reasoning_effort for high reasoning mode (gpt-oss-120b, etc.)
-            # OpenAI SDK natively supports reasoning_effort parameter
+            # Use OpenAI SDK's native chat.completions.create() with proper parameters
             # Reference: https://platform.openai.com/docs/api-reference/chat/create
-            if self.reasoning_effort:
-                request_kwargs["reasoning_effort"] = self.reasoning_effort
-                if self.debug:
-                    print(f"[vLLM-API] Using reasoning_effort={self.reasoning_effort}")
+            response = self.client.chat.completions.create(
+                # Required parameters
+                messages=prompt,
+                model=self.model_name,
+                # Sampling parameters
+                temperature=self.args.temperature,
+                top_p=self.args.top_p,
+                n=self.expected_n,
+                # Token limits
+                max_tokens=self.args.max_tokens,
+                # Stop sequences (if configured)
+                stop=self.args.stop if hasattr(self.args, 'stop') and self.args.stop != ["###"] else None,
+                # Reasoning effort for reasoning models (gpt-oss-120b, DeepSeek-R1, etc.)
+                # Supported values: low, medium, high
+                # Higher values = more reasoning tokens, better quality on complex tasks
+                reasoning_effort=self.reasoning_effort if self.reasoning_effort else None,
+                # Request timeout
+                timeout=self.args.openai_timeout,
+            )
             
-            response = self.client.chat.completions.create(**request_kwargs)
+            if self.debug and self.reasoning_effort:
+                print(f"[vLLM-API] Request sent with reasoning_effort={self.reasoning_effort}")
             
             # Extract all n results
             results = []
@@ -193,14 +208,20 @@ class VLLMAPIRunner(BaseRunner):
                     message = choice.message
                     if message:
                         content = message.content or ""
-                        # For reasoning models, optionally include reasoning_content
-                        # Some vLLM deployments return reasoning in message.reasoning or message.reasoning_content
+                        # For reasoning models, check for reasoning_content in response
+                        # Some vLLM deployments return reasoning in message.reasoning_content
                         reasoning = getattr(message, 'reasoning_content', None) or getattr(message, 'reasoning', None)
                         if reasoning and self.debug:
-                            print(f"[vLLM-API] Reasoning: {reasoning[:200]}...")
+                            print(f"[vLLM-API] Reasoning tokens received: {len(reasoning)} chars")
+                            print(f"[vLLM-API] Reasoning preview: {reasoning[:200]}...")
                         results.append(content)
                     else:
                         results.append("")
+            
+            # Log usage stats if available
+            if self.debug and hasattr(response, 'usage') and response.usage:
+                usage = response.usage
+                print(f"[vLLM-API] Usage: prompt={usage.prompt_tokens}, completion={usage.completion_tokens}, total={usage.total_tokens}")
             
             # Pad with empty strings if we got fewer results
             while len(results) < self.expected_n:
