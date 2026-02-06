@@ -118,6 +118,13 @@ def get_args():
         help="Folder name to save the custom output results (output file folder modified if None)",
     )
     parser.add_argument("--dtype", type=str, default="bfloat16", help="Dtype for vllm")
+    # Output file naming
+    parser.add_argument(
+        "--run_id",
+        type=str,
+        default=None,
+        help="Custom run ID/suffix for output files (e.g., 'exp1', 'high_reasoning_v2'). Output: scenario_n_temp_<run_id>.json",
+    )
     # High reasoning / thinking mode support
     parser.add_argument(
         "--high_reasoning",
